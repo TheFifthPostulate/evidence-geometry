@@ -5,7 +5,7 @@ An interpretable evidence-based risk modeling framework for classification probl
 
 2. Learns class-conditional geometry
 
-3. Provides decomposed interpretable risk signals:
+3. Provides decomposed interpretable risk signals:  
    i. Distance contrast : Difference of Mahalanobis distances relative to learned class manifolds in evidence space  
    ii. Drift projection :  Projection of evidence onto learned mean deviation separation direction between class manifolds  
    iii. Principal component bundle energy : Sum of squares of projections of evidence onto Principal Component directions of positive-class subspace in evidence space  
