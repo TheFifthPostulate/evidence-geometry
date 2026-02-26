@@ -1,0 +1,470 @@
+---
+output: 
+  html_document
+---
+
+```{r, message=FALSE}
+
+library(here)
+library(tibble)
+library(ranger)
+library(caret)
+library(ggplot2)
+
+source(here("v2","src","evidencegeom.R"))
+
+set.seed(42)
+
+
+```
+
+## Dataset 3: UCI Heart Disease Cleveland
+
+Comment Block : Data prep of raw UCI Heart Disease Cleveland data
+
+```{r}
+
+# heartdisease <- read.csv(here("v2","src","data","heartdisease","processed.cleveland.data"))
+# 
+# names(heartdisease) <- c("age","sex","cp","trestbps","chol","fbs","restecg","thalach","exang","oldpeak","slope","ca","thal","num")
+# 
+# heartdisease$slope <- as.factor(
+#   case_when(
+#     heartdisease$slope == 1 ~ "Upsloping",
+#     heartdisease$slope == 2 ~ "Flat",
+#     heartdisease$slope == 3 ~ "Downsloping",
+#     TRUE ~ "Unknown"
+#   )
+# )
+# 
+# 
+# heartdisease$restecg <- as.factor(
+#   case_when(
+#     heartdisease$restecg == 0 ~ "Normal",
+#     heartdisease$restecg == 1 ~ "ST-T Wave Abnormality",
+#     heartdisease$restecg == 2 ~ "Probable Left Ventricular Hypertrophy",
+#     TRUE ~ "Unknown"
+#   )
+# )
+#   
+# 
+# heartdisease$cp <- as.factor(case_when(
+#   heartdisease$cp == 1 ~ "Typical Angina",
+#   heartdisease$cp == 2 ~ "Atypical Angina",
+#   heartdisease$cp == 3 ~ "Non-anginal Pain",
+#   heartdisease$cp == 4 ~ "Asymptomatic",
+#   TRUE ~ "Unknown"
+# ))
+# 
+# 
+# heartdisease$thal <- as.factor(
+#   case_when(
+#     heartdisease$thal == "3.0" ~ "Normal",
+#     heartdisease$thal == "6.0" ~ "Fixed Defect",
+#     heartdisease$thal == "7.0" ~ "Reversible Defect",
+#     TRUE ~ "Unknown"
+#   )
+# )
+# 
+# 
+# heartdisease$ca <- as.integer(heartdisease$ca)
+# 
+# 
+# heartdisease$fbs <- ifelse(heartdisease$fbs == 1, TRUE, FALSE)
+# heartdisease$exang <- ifelse(heartdisease$exang == 1, TRUE, FALSE)
+# 
+# 
+# heartdisease$sex <- as.factor(ifelse(heartdisease$sex == 1, "M", "F"))
+# 
+# 
+# heartdisease <- drop_na(heartdisease)
+# 
+# 
+# heartdisease$num <- as.factor(
+#   case_when(
+#     heartdisease$num < 1 ~ "Healthy",
+#     heartdisease$num >= 1 ~ "Heart Disease",
+#     TRUE ~ "Unknown"
+#   )
+# )
+
+```
+
+```{r}
+
+# heartdisease_train_idx <- caret::createDataPartition(heartdisease$num, p=0.5, list=FALSE)
+# heartdisease_train <- heartdisease[heartdisease_train_idx, ]
+# heartdisease_eval <- heartdisease[-heartdisease_train_idx, ]
+# 
+# heartdisease_val_idx <- createDataPartition(heartdisease_eval$num, p=0.5, list=FALSE)
+# heartdisease_val <- heartdisease_eval[heartdisease_val_idx, ]
+# heartdisease_test <- heartdisease_eval[-heartdisease_val_idx, ]
+
+```
+
+```{r}
+
+# write.csv(heartdisease_train, here("v2","src","data","heartdisease","heartdisease_train.csv"))
+# write.csv(heartdisease_val, here("v2","src","data","heartdisease","heartdisease_val.csv"))
+# write.csv(heartdisease_test, here("v2","src","data","heartdisease","heartdisease_test.csv"))
+
+```
+
+Load Test-Val-Train Splits
+
+```{r}
+
+heartdisease_train <- read.csv(here("v2", "src", "data", "heartdisease", "heartdisease_train.csv"))
+heartdisease_val <- read.csv(here("v2", "src", "data", "heartdisease", "heartdisease_val.csv"))
+heartdisease_test <- read.csv(here("v2", "src", "data", "heartdisease", "heartdisease_test.csv"))
+
+```
+
+```{r}
+
+heartdisease_train[sapply(heartdisease_train, is.character)] <- lapply(heartdisease_train[sapply(heartdisease_train, is.character)], as.factor)
+heartdisease_train$ca <- as.factor(heartdisease_train$ca)
+
+heartdisease_val[sapply(heartdisease_val, is.character)] <- lapply(heartdisease_val[sapply(heartdisease_val, is.character)], as.factor)
+heartdisease_val$ca <- as.factor(heartdisease_val$ca)
+
+heartdisease_test[sapply(heartdisease_test, is.character)] <- lapply(heartdisease_test[sapply(heartdisease_test, is.character)], as.factor)
+heartdisease_test$ca <- as.factor(heartdisease_test$ca)
+
+```
+
+Class Ratio to input for generating Evidence Space
+
+```{r}
+
+alpha <- (nrow(heartdisease_train[heartdisease_train$num=="Heart Disease", ])/nrow(heartdisease_train))
+
+```
+
+Generate Evidence Space
+
+risk_spec : Object to store function argument values for evidence space generation
+
+fit : Learn feature-wise marginal likelihoods, and geometries and eigenmodes of class manifolds in evidence space
+
+loglik_matrices : Compute marginal positive-class and negative-class evidences, and marginal relative evidence for input data using fitted evidence generator
+
+score_risk : Compute total feature-wise evidence, distance constrast, drift projection, and eigenmode energies
+
+
+```{r, warning=FALSE}
+
+spec <- risk_spec(
+   y_col="num", positive="Heart Disease",
+   features = setdiff(names(heartdisease_train), c("num", "X")),
+   alpha = alpha,
+   laplace = 1, ridge = 1e-6, winsor_p=0.01,
+   weights=FALSE,
+   weight_method = "mean_gap"
+ )
+
+obj <- fit(heartdisease_train%>%select(-X), spec, k_eigen=2, k_energy=2, energy_ref="both")
+
+```
+
+
+```{r}
+
+Lval <- loglik_matrices(heartdisease_val%>%select(-X), obj$fit, alpha=spec$alpha)
+# val/test scoring
+scores_val <- bind_cols(id=heartdisease_val$X, 
+                            num=heartdisease_val$num, 
+                            score_risk(Lval$l_pos, Lval$l_neg,  obj$fit$weights, obj$geom, 
+                                       spec$alpha, spec$eps))
+
+```
+
+Learn baseline Random Forest and predict
+
+```{r}
+
+rf_train_1 <- ranger(formula = num ~ ., data=heartdisease_train%>%select(-X),
+                         mtry=4, min.node.size=5, num.trees=500, probability = TRUE,
+                         keep.inbag = TRUE)
+
+```
+
+```{r}
+
+scores_val <- bind_cols(scores_val,
+                            p = predict(rf_train_1, heartdisease_val%>%select(-X, -num))$predictions[,"Heart Disease"])
+
+```
+
+Sample from evidence output
+
+l_pos : Sum of marginal positive evidence
+l_neg : Sum of marginal negative evidence
+l : Sum of marginal evidence (difference of positive and negative evidence)
+proj : Projection of benign-relative z scores of evidences on mean deviation class separation direction learned from training
+d_dist : Difference of Mahalanobis Distances of evidence vector from negative-class evidence manifold and positive-class evidence manifold
+E_pos : Total energy (sum of squares of projections over k principal components of positive-class) of evidence vector
+p : Random Forest probability score for positive-class
+
+```{r}
+
+head(scores_val, 5)
+
+```
+
+Feature Importance using ratio of feature-wise evidences
+
+```{r}
+
+feature_importance(df=heartdisease_train, y_col="num", fit = obj$fit, method = "mean_gap", top_n = 15)
+
+```
+
+
+```{r}
+
+ggplot(scores_val) +
+  geom_histogram(aes(x=l, fill=num), alpha=0.6) +
+  xlab("Sum of relative marginal evidence from all features") +
+  theme_minimal()
+
+ggplot(scores_val) +
+  geom_point(aes(x=qlogis(p), y=l, color=num), alpha=0.7) +
+  xlab("log-odds of random forest heart disease probability (p)") +
+  theme_minimal()
+
+ggplot(scores_val) +
+  geom_point(aes(x=qlogis(p), y=d_dist, color=num), alpha=0.7) +
+  xlab("log-odds of random forest heart disease probability (p)") +
+  theme_minimal()
+
+ggplot(scores_val) +
+  geom_point(aes(x=qlogis(p), y=proj, color=num), alpha=0.7) +
+  xlab("log-odds of random forest heart disease probability (p)") +
+  theme_minimal()
+
+ggplot(scores_val) +
+  geom_point(aes(x=d_dist, y=proj, color=num), alpha=0.7) +
+  theme_minimal()
+
+ggplot(scores_val%>%filter(d_dist < 0.7)) +
+  geom_point(aes(x=d_dist, y=proj, color=num), alpha=0.7) +
+  theme_minimal()
+
+patchwork::wrap_plots(
+
+ggplot(scores_val) +
+  geom_point(aes(x=d_dist, y=E_pos, color=num), alpha=0.7) +
+  theme_minimal(),
+
+ggplot(scores_val) +
+  geom_point(aes(x=proj, y=E_pos, color=num), alpha=0.7) +
+  theme_minimal(),
+
+ggplot(scores_val%>%filter(d_dist < 0.7, E_pos < 400)) +
+  geom_point(aes(x=d_dist, y=E_pos, color=num), alpha=0.7) +
+  theme_minimal(),
+
+ggplot(scores_val%>%filter(d_dist < 0.7, E_pos < 400)) +
+  geom_point(aes(x=proj, y=E_pos, color=num), alpha=0.7) +
+  theme_minimal()
+) + patchwork::plot_layout(guides="collect")
+
+
+
+
+
+```
+
+Weighted evidence matrix using optional weights. Default weights (when selected) : KL separation between positive and negative classes per evidence
+
+```{r}
+
+Lval_w <- apply_llr_weights(Lval$L, obj$fit$weights)
+
+```
+
+Eigenmode Decomposition (PCA) of Heart Disease subset
+
+```{r}
+
+Lval_w_M <- Lval_w[heartdisease_val$num == "Heart Disease", , drop = FALSE]
+Lval_w_Sigma_M <- cov(Lval_w_M)
+Lval_w_Sigma_M <- Lval_w_Sigma_M + diag(1e-6, ncol(Lval_w_Sigma_M))
+Lval_w_eig_M <- eigen(Lval_w_Sigma_M, symmetric = TRUE)
+
+Lval_w_eigvals_M  <- Lval_w_eig_M$values
+Lval_w_eigvecs_M  <- Lval_w_eig_M$vectors
+
+Lval_w_coords_M <- Lval_w_M %*% Lval_w_eigvecs_M[, 1:2]
+
+```
+
+Variance Explained
+
+```{r}
+
+Lval_w_eigvals_M[1:2] / sum(Lval_w_eigvals_M[1:2])
+
+```
+
+Top 5 feature loadings
+
+```{r}
+
+decompose_eigenmode(Lval_w_eigvecs_M, k=1, feature_names = obj$fit$features, top_n=5)
+
+decompose_eigenmode(Lval_w_eigvecs_M, k=2, feature_names = obj$fit$features, top_n=5)
+
+```
+
+Eigenmode Decomposition (PCA) of Healthy subset
+
+```{r}
+
+Lval_w_B <- Lval_w[heartdisease_val$num == "Healthy", , drop = FALSE]
+Lval_w_Sigma_B <- cov(Lval_w_B)
+Lval_w_Sigma_B <- Lval_w_Sigma_B + diag(1e-6, ncol(Lval_w_Sigma_B))
+Lval_w_eig_B <- eigen(Lval_w_Sigma_B, symmetric = TRUE)
+
+Lval_w_eigvals_B  <- Lval_w_eig_B$values
+Lval_w_eigvecs_B  <- Lval_w_eig_B$vectors
+
+Lval_w_coords_B <- Lval_w_B %*% Lval_w_eigvecs_B[, 1:2]
+
+```
+
+Variance Explained
+
+```{r}
+
+Lval_w_eigvals_B[1:2] / sum(Lval_w_eigvals_B[1:2])
+
+```
+
+Top 5 feature loadings
+
+```{r}
+
+decompose_eigenmode(Lval_w_eigvecs_B, k=1, feature_names = obj$fit$features, top_n=5)
+
+decompose_eigenmode(Lval_w_eigvecs_B, k=2, feature_names = obj$fit$features, top_n=5)
+
+```
+
+
+Cosine Similarity of Eigenmode 1 Heart Disease and Eigenmode 1 Healthy
+
+```{r}
+
+acos((t(Lval_w_eigvecs_B[,1]) %*% Lval_w_eigvecs_M[,1]) / (sqrt(t(Lval_w_eigvecs_B[,1]) %*% Lval_w_eigvecs_B[,1]) * sqrt(t(Lval_w_eigvecs_M[,1]) %*% Lval_w_eigvecs_M[,1]))) * 180 / pi
+
+```
+
+
+Fitting Evidence Model and Random Forest on train+val set
+
+```{r}
+
+obj_2 <- fit(bind_rows(heartdisease_train%>%select(-X),
+                           heartdisease_val%>%select(-X)), spec, k_eigen=2, k_energy=2, energy_ref="both")
+
+Ltest <- loglik_matrices(heartdisease_test%>%select(-X), obj_2$fit, alpha=spec$alpha)
+# val/test scoring
+scores_test <- bind_cols(X=heartdisease_test$X, 
+                            num=heartdisease_test$num, 
+                            
+                            score_risk(Ltest$l_pos, Ltest$l_neg,  obj_2$fit$weights, obj_2$geom, 
+                                       spec$alpha, spec$eps))
+
+
+```
+
+```{r}
+
+rf_train_2 <- ranger(formula = num ~ ., data=bind_rows(heartdisease_train%>%select(-X), heartdisease_val%>%select(-X)),
+                         mtry=4, min.node.size=5, num.trees=500, probability = TRUE,
+                         keep.inbag = TRUE)
+
+```
+
+Test Set Performace
+
+```{r}
+
+scores_test <- bind_cols(scores_test,
+                            p = predict(rf_train_2, heartdisease_test%>%select(-X))$predictions[,"Heart Disease"])
+
+```
+
+
+```{r}
+
+apply_triage <- function(df, p_hi = 0.65, p_review = 0.45, tau_d = -1.0, tau_p = 0) {
+  df %>%
+    mutate(
+      action = case_when(
+        p >= p_hi ~ "Disease",
+        p > p_review ~ "Review",
+        (p <= p_review) & (d_dist >= tau_d) & (proj > tau_p) ~ "Review",
+        TRUE ~ "Healthy"
+      )
+    )
+}
+
+triage_table <- function(df, truth_col, action_col = "action") {
+  tab <- table(df[[action_col]], df[[truth_col]])
+  as.data.frame.matrix(tab) %>%
+    tibble::rownames_to_column(action_col)
+}
+
+
+```
+
+```{r}
+
+test_triaged <- scores_test %>%
+  apply_triage(p_hi = 0.65, p_review = 0.45, tau_d = -1.0, tau_p = 0)
+
+triage_table(test_triaged, truth_col = "num", action_col = "action")
+
+
+```
+
+```{r}
+
+test_metrics <- function(df, truth_col, levels, p_col) {
+  truth <- df[[truth_col]]
+  stopifnot(all(levels(truth) %in% levels))
+
+  benign_path <- df %>% filter(action == "Healthy")
+  review_path <- df %>% filter(action == "Review")
+  mal_path <- df %>% filter(action == "Disease")
+
+  tibble(
+    auto_benign_fn_rate = mean(benign_path[[truth_col]] == levels[2]),
+    fn_capture_rate = 1 - mean(df[[truth_col]] == levels[2] & df$action == "Healthy"),
+    overall_review_rate = mean(df$action == "Review"),
+    benign_region_review_rate = mean(df[[p_col]] <= 0.45 & df$action == "Review") / mean(df[[p_col]] <= 0.45),
+    malignant_region_fp_override_rate = mean(df[[p_col]] >= 0.65 & df[[truth_col]] == levels[1]) / mean(df[[p_col]] >= 0.65) # optional
+  )
+}
+
+test_metrics(test_triaged, truth_col="num", p_col="p", levels=levels(heartdisease_test$num))
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
