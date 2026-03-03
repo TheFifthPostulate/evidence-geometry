@@ -7,12 +7,12 @@ Instead of producing opaque probability scores, this framework exposes distinct,
 
 ### Repo Link
 
-https://github.com/TheFifthPostulate/evidence-geometry/tree/main[https://github.com/TheFifthPostulate/evidence-geometry/tree/main]  
+[https://github.com/TheFifthPostulate/evidence-geometry/tree/main](https://github.com/TheFifthPostulate/evidence-geometry/tree/main)  
 
 ### R Notebooks
 
-**BCW dataset** : https://thefifthpostulate.github.io/evidence-geometry/bcw_analysis.html[https://thefifthpostulate.github.io/evidence-geometry/bcw_analysis.html]  
-**UCI Heart Disease Cleveland** : https://thefifthpostulate.github.io/evidence-geometry/heartdisease_analysis.html[https://thefifthpostulate.github.io/evidence-geometry/heartdisease_analysis.html]  
+**BCW dataset** : [https://thefifthpostulate.github.io/evidence-geometry/bcw_analysis.html](https://thefifthpostulate.github.io/evidence-geometry/bcw_analysis.html)  
+**UCI Heart Disease Cleveland** : [https://thefifthpostulate.github.io/evidence-geometry/heartdisease_analysis.html](https://thefifthpostulate.github.io/evidence-geometry/heartdisease_analysis.html)  
 
 ---
 
