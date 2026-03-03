@@ -5,6 +5,11 @@ Evidence Geometry is an interpretable classification framework that transforms h
 
 Instead of producing opaque probability scores, this framework exposes distinct, explainable risk signals for each case.
 
+### R Notebooks
+
+**BCW dataset** : https://thefifthpostulate.github.io/evidence-geometry/bcw_analysis.html  
+**UCI Heart Disease Cleveland** : https://thefifthpostulate.github.io/evidence-geometry/heartdisease_analysis.html  
+
 ---
 
 ## Core Idea
