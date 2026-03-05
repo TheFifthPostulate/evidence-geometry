@@ -16,13 +16,35 @@ Instead of producing opaque probability scores, this framework exposes distinct,
 
 ---
 
-## Core Idea
+## Statistical Foundation
 
-1. Convert all features (continuous, categorical, binary) into per-feature log-likelihood ratios (evidence).
-2. Learn class-conditional geometry in evidence space.
-3. Decompose case-level risk into interpretable components.
+Each feature is converted into **log-likelihood ratio evidence**
 
-This approach preserves per-feature likelihood structure while enabling unified geometric analysis.
+log p(x | positive) − log p(x | negative)
+
+This transforms heterogeneous inputs into a unified **evidence space**.
+
+In this space:
+
+• Evidence accumulates additively  
+• Population geometry becomes analyzable  
+• Case-level risk can be decomposed into interpretable components
+
+This interpretation connects the framework to classical **likelihood ratio testing and Bayesian evidence accumulation**.
+
+---
+
+## Framework Overview
+
+Raw Data
+   ↓
+Per-Feature Likelihood Models
+   ↓
+Log-Likelihood Ratio Evidence
+   ↓
+Evidence Space
+   ↓
+Geometric Risk Signals
 
 ---
 
