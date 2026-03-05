@@ -36,15 +36,15 @@ This interpretation connects the framework to classical **likelihood ratio testi
 
 ## Framework Overview
 
-Raw Data
-   ↓
-Per-Feature Likelihood Models
-   ↓
-Log-Likelihood Ratio Evidence
-   ↓
-Evidence Space
-   ↓
-Geometric Risk Signals
+Raw Data  
+   ↓  
+Per-Feature Likelihood Models  
+   ↓  
+Log-Likelihood Ratio Evidence  
+   ↓  
+Evidence Space  
+   ↓  
+Geometric Risk Signals  
 
 ---
 
