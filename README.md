@@ -52,6 +52,23 @@ Together, these signals capture complementary modes of risk instead of collapsin
 
 ---
 
+## Example Interpretation
+
+A case might produce:  
+d_dist = -0.3  
+proj = +0.7  
+E_pos = moderate  
+
+Interpretation:
+
+- globally closer to the benign population
+- but drifting toward pathological structure
+- with partial activation of disease-related feature bundles
+
+Such cases are natural candidates for **review triage** rather than automated classification.
+
+---
+
 ## Demonstrated On
 
 - Wisconsin Breast Cancer (BCW)
