@@ -113,7 +113,7 @@ Across both datasets, the framework:
 - Principal Component analysis tools  
 - Modular likelihood specification framework
 
-**Core Dependencies:** R (4.1 or greater), dplyr, tibble
+**Core Dependencies:** R (4.1 or greater), dplyr, tibble  
 **Required Packages for Notebooks:** dplyr, ggplot2, caret, patchwork, tibble
 
 ---
