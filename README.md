@@ -21,7 +21,7 @@ The framework transforms heterogeneous features into a **unified log-likelihood 
 
 Each feature is converted into **log-likelihood ratio evidence**
 
-log p(x | positive) − log p(x | negative)
+log p(x \| positive class) − log p(x \| negative class)
 
 This transforms heterogeneous inputs into a unified **evidence space**.
 
