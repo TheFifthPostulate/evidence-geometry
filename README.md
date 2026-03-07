@@ -1,9 +1,10 @@
 # Evidence Geometry  
 ### An Interpretable Evidence-Based Risk Modeling Framework
 
-Evidence Geometry is an interpretable classification framework that transforms heterogeneous features into a unified **log-likelihood ratio (evidence) space**, enabling transparent and decomposed risk analysis.
+Evidence Geometry is an experimental framework for interpretable risk modeling in classification problems.  
+Instead of producing a single probability score, it decomposes model predictions into structured evidence signals that reveal how risk emerges in the data.  
 
-Instead of producing opaque probability scores, this framework exposes distinct, explainable risk signals for each case.
+The framework transforms heterogeneous features into a **unified log-likelihood ratio evidence space, allowing risk to be analyzed geometrically**.
 
 ### Repo Link
 
