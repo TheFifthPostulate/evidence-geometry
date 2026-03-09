@@ -20,7 +20,55 @@ set.seed(42)
 
 ## Dataset 3: UCI Heart Disease Cleveland
 
-Comment Block : Data prep of raw UCI Heart Disease Cleveland data
+## TL;DR
+
+This notebook demonstrates the **Evidence Geometry** framework on the **UCI Heart Disease Cleveland** dataset.
+
+Instead of relying only on classifier probability, the framework analyzes each case using two geometric risk signals:
+
+- **Distance Contrast (`d_dist`)**: measures which class manifold better explains the case
+- **Drift Projection (`proj`)**: measures directional drift toward positive-class structure
+
+### Validation Set Risk Map
+
+<div style="text-align: center;">
+  <img src="v2/images/heartdisease_1.png" width="750">
+  <p><em>Validation-set risk map.</em></p>
+</div>
+
+<div style="text-align: center;">
+  <img src="v2/images/heartdisease_2.png" width="750">
+  <p><em>Validation-set risk map in the low-RF probability region  (p < 0.45).</em></p>
+</div>
+
+
+### Main Observation
+
+Within the subset of cases assigned **low probability by the Random Forest classifier**, the two geometric signals reveal additional structure:
+
+- Boundary of ambiguity, d_dist = 0, occurs much earlier in the feature space than p = 0.5 classifier ambiguous region.
+- Dominant benign cluster is present in the region d_dist < 0, proj < 0.
+- Pathological cases are distinctly present among benign points that cross the benign central region of d_dist < 0 and proj < 0.
+
+This suggests that geometric evidence can detect **hidden risk structure earlier than classifier probability alone**.
+
+### Test Set Result
+
+With a conservative triage policy on the test set, the risk signals help achieve:
+
+- Identification of true ambiguity in data
+- Abstention of classification of ambiguous cases
+- **98%** false negative capture rate through abstention
+- Maintain good automated classification rate at **38%**
+
+### Takeaway
+
+`d_dist` and `proj` provide a compact and interpretable view of **how risk accumulates geometrically**, especially in cases where standard discriminative classifiers assign deceptively low probability.
+
+
+## Full Analysis
+
+### Comment Block : Data prep of raw UCI Heart Disease Cleveland data
 
 ```{r}
 
@@ -110,7 +158,7 @@ Comment Block : Data prep of raw UCI Heart Disease Cleveland data
 
 ```
 
-Load Test-Val-Train Splits
+### Load Test-Val-Train Splits
 
 ```{r}
 
@@ -133,7 +181,8 @@ heartdisease_test$ca <- as.factor(heartdisease_test$ca)
 
 ```
 
-Class Ratio to input for generating Evidence Space
+
+### Class Ratio to input for generating Evidence Space
 
 ```{r}
 
@@ -141,16 +190,17 @@ alpha <- (nrow(heartdisease_train[heartdisease_train$num=="Heart Disease", ])/nr
 
 ```
 
-Generate Evidence Space
+## Evidence Space Transformation
 
-risk_spec : Object to store function argument values for evidence space generation
+**risk_spec** : Object to store function argument values for evidence space generation  
 
-fit : Learn feature-wise marginal likelihoods, and geometries and eigenmodes of class manifolds in evidence space
+**fit** : Learn feature-wise marginal likelihoods, and geometries and eigenmodes of class manifolds in evidence space  
 
-loglik_matrices : Compute marginal positive-class and negative-class evidences, and marginal relative evidence for input data using fitted evidence generator
+**loglik_matrices** : Compute marginal positive-class and negative-class evidences, and marginal relative evidence for input data using fitted evidence generator  
 
-score_risk : Compute total feature-wise evidence, distance constrast, drift projection, and eigenmode energies
+**score_risk** : Compute total feature-wise evidence, distance constrast, drift projection, and eigenmode energies  
 
+### Generate Evidence Space
 
 ```{r, warning=FALSE}
 
@@ -179,7 +229,7 @@ scores_val <- bind_cols(id=heartdisease_val$X,
 
 ```
 
-Learn baseline Random Forest and predict
+### Learn baseline Random Forest and predict
 
 ```{r}
 
@@ -196,15 +246,15 @@ scores_val <- bind_cols(scores_val,
 
 ```
 
-Sample from evidence output
+### Sample from evidence output
 
-l_pos : Sum of marginal positive evidence
-l_neg : Sum of marginal negative evidence
-l : Sum of marginal evidence (difference of positive and negative evidence)
-proj : Projection of benign-relative z scores of evidences on mean deviation class separation direction learned from training
-d_dist : Difference of Mahalanobis Distances of evidence vector from negative-class evidence manifold and positive-class evidence manifold
-E_pos : Total energy (sum of squares of projections over k principal components of positive-class) of evidence vector
-p : Random Forest probability score for positive-class
+**l_pos** : Sum of marginal positive evidence  
+**l_neg** : Sum of marginal negative evidence  
+**l** : Sum of marginal evidence (difference of positive and negative evidence)  
+**proj** : Projection of benign-relative z scores of evidences on mean deviation class separation direction learned from training  
+**d_dist** : Difference of Mahalanobis Distances of evidence vector from negative-class evidence manifold and positive-class evidence manifold  
+**E_pos** : Total energy (sum of squares of projections over k principal components of positive-class) of evidence vector  
+**p** : Random Forest probability score for positive-class  
 
 ```{r}
 
@@ -212,7 +262,7 @@ head(scores_val, 5)
 
 ```
 
-Feature Importance using ratio of feature-wise evidences
+### Feature Importance using ratio of feature-wise evidences
 
 ```{r}
 
@@ -276,6 +326,7 @@ ggplot(scores_val%>%filter(d_dist < 0.7, E_pos < 400)) +
 
 ```
 
+
 Weighted evidence matrix using optional weights. Default weights (when selected) : KL separation between positive and negative classes per evidence
 
 ```{r}
@@ -284,7 +335,7 @@ Lval_w <- apply_llr_weights(Lval$L, obj$fit$weights)
 
 ```
 
-Eigenmode Decomposition (PCA) of Heart Disease subset
+### Eigenmode Decomposition (PCA) of Heart Disease subset
 
 ```{r}
 
@@ -300,7 +351,7 @@ Lval_w_coords_M <- Lval_w_M %*% Lval_w_eigvecs_M[, 1:2]
 
 ```
 
-Variance Explained
+#### Variance Explained
 
 ```{r}
 
@@ -308,7 +359,7 @@ Lval_w_eigvals_M[1:2] / sum(Lval_w_eigvals_M[1:2])
 
 ```
 
-Top 5 feature loadings
+#### Top 5 feature loadings
 
 ```{r}
 
@@ -318,7 +369,7 @@ decompose_eigenmode(Lval_w_eigvecs_M, k=2, feature_names = obj$fit$features, top
 
 ```
 
-Eigenmode Decomposition (PCA) of Healthy subset
+#### Eigenmode Decomposition (PCA) of Healthy subset
 
 ```{r}
 
@@ -334,7 +385,7 @@ Lval_w_coords_B <- Lval_w_B %*% Lval_w_eigvecs_B[, 1:2]
 
 ```
 
-Variance Explained
+#### Variance Explained
 
 ```{r}
 
@@ -353,7 +404,7 @@ decompose_eigenmode(Lval_w_eigvecs_B, k=2, feature_names = obj$fit$features, top
 ```
 
 
-Cosine Similarity of Eigenmode 1 Heart Disease and Eigenmode 1 Healthy
+### Cosine Similarity of Eigenmode 1 Heart Disease and Eigenmode 1 Healthy
 
 ```{r}
 
@@ -362,7 +413,7 @@ acos((t(Lval_w_eigvecs_B[,1]) %*% Lval_w_eigvecs_M[,1]) / (sqrt(t(Lval_w_eigvecs
 ```
 
 
-Fitting Evidence Model and Random Forest on train+val set
+## Fitting Evidence Model and Random Forest on train+val set
 
 ```{r}
 
@@ -388,7 +439,7 @@ rf_train_2 <- ranger(formula = num ~ ., data=bind_rows(heartdisease_train%>%sele
 
 ```
 
-Test Set Performace
+## Test Set Performance
 
 ```{r}
 
@@ -397,6 +448,14 @@ scores_test <- bind_cols(scores_test,
 
 ```
 
+
+### Triage Rule
+
+**If** $p > 0.65$ $\rightarrow$ **Heart Disease**  
+**Else If** $p > 0.45$ $\rightarrow$ **Review**  
+**Else**  
+&emsp;**If** $d\_dist > -1$ & $proj > 0$ $\rightarrow$ **Review**  
+&emsp;**Else** $\rightarrow$ **Healthy**  
 
 ```{r}
 
@@ -420,6 +479,9 @@ triage_table <- function(df, truth_col, action_col = "action") {
 
 
 ```
+
+
+### Triage Results
 
 ```{r}
 

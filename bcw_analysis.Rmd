@@ -20,9 +20,57 @@ set.seed(42)
 ```
 
 
-# 1. Dataset 1: BCW
+## Dataset 1: BCW
 
-Comment Block : Data prep from BCW raw data
+## TL;DR
+
+This notebook demonstrates the **Evidence Geometry** framework on the **Breast Cancer Wisconsin** dataset.
+
+Instead of relying only on classifier probability, the framework analyzes each case using two geometric risk signals:
+
+- **Distance Contrast (`d_dist`)**: measures which class manifold better explains the case
+- **Drift Projection (`proj`)**: measures directional drift toward positive-class structure
+
+### Validation Set Risk Map
+
+<div style="text-align: center;">
+  <img src="v2/images/bcw_1.png" width="750">
+  <p><em>Validation-set risk map.</em></p>
+</div>
+
+<div style="text-align: center;">
+  <img src="v2/images/bcw_2.png" width="750">
+  <p><em>Validation-set risk map in the low-RF probability region  (p < 0.45).</em></p>
+</div>
+
+
+### Main Observation
+
+Within the subset of cases assigned **low probability by the Random Forest classifier**, the two geometric signals reveal additional structure:
+
+- Boundary of ambiguity, d_dist = 0, occurs much earlier in the feature space than p = 0.5 classifier ambiguous region.
+- Dominant benign cluster is present in the region d_dist < 0, proj < 0.
+- Pathological cases are distinctly present among benign points that cross the benign central region of d_dist < 0 and proj < 0.
+
+This suggests that geometric evidence can detect **hidden risk structure earlier than classifier probability alone**.
+
+### Test Set Result
+
+With a conservative triage policy on the test set, the risk signals help achieve:
+
+- Identification of true ambiguity in data
+- Abstention of classification of ambiguous cases
+- **100%** false negative capture rate through abstention
+- Maintain good automated classification rate at **20%**
+
+### Takeaway
+
+`d_dist` and `proj` provide a compact and interpretable view of **how risk accumulates geometrically**, especially in cases where standard discriminative classifiers assign deceptively low probability.
+
+
+## Full Analysis
+
+### Comment Block : Data prep from BCW raw data
 
 ```{r}
 
@@ -72,7 +120,9 @@ Comment Block : Data prep from BCW raw data
 
 ```
 
-Load Train-Val-Test splits : Splits performed ensuring a proportion of known failure modes are present in all three splits
+### Load Train-Val-Test splits  
+
+Splits performed ensuring a proportion of known failure modes are present in all three splits
 
 ```{r}
 
@@ -94,7 +144,7 @@ bcw_test$diagnosis <- as.factor(bcw_test$diagnosis)
 ```
 
 
-Class overlap and hidden failures
+#### Class overlap and hidden failures
 
 ```{r}
 
@@ -112,20 +162,7 @@ nrow(bcw_train%>%filter(worst_perimeter >= 50 & worst_perimeter <= 105))
 ```
 
 
-### Evidence Space Transformation
-
-Generate Evidence Space
-
-risk_spec : Object to store function argument values for evidence space generation
-
-fit : Learn feature-wise marginal likelihoods, and geometries and eigenmodes of class manifolds in evidence space
-
-loglik_matrices : Compute marginal positive-class and negative-class evidences, and marginal relative evidence for input data using fitted evidence generator
-
-score_risk : Compute total feature-wise evidence, distance constrast, drift projection, and eigenmode energies
-
-
-Class Ratio to input for generating Evidence Space
+### Class Ratio to input for generating Evidence Space
 
 ```{r}
 
@@ -133,6 +170,19 @@ alpha <- (nrow(bcw_train[bcw_train$diagnosis=="M", ])/nrow(bcw_train))
 
 ```
 
+
+## Evidence Space Transformation
+
+**risk_spec** : Object to store function argument values for evidence space generation  
+
+**fit** : Learn feature-wise marginal likelihoods, and geometries and eigenmodes of class manifolds in evidence space  
+
+**loglik_matrices** : Compute marginal positive-class and negative-class evidences, and marginal relative evidence for input data using fitted evidence generator  
+
+**score_risk** : Compute total feature-wise evidence, distance constrast, drift projection, and eigenmode energies  
+
+
+### Generate Evidence Space
 
 ```{r, warning=FALSE}
 
@@ -170,7 +220,7 @@ bcw_Lval_w <- apply_llr_weights(bcw_Lval$L, bcw_obj$fit$weights)
 
 ```
 
-Learn baseline Random Forest and predict
+### Learn baseline Random Forest and predict
 
 ```{r}
 
@@ -188,7 +238,7 @@ bcw_scores_val <- bind_cols(bcw_scores_val,
 ```
 
 
-Feature Importance using ratio of feature-wise evidences
+### Feature Importance using ratio of feature-wise evidences
 
 ```{r}
 
@@ -196,15 +246,15 @@ feature_importance(df=bcw_train, y_col="diagnosis", fit = bcw_obj$fit, method = 
 
 ```
 
-Sample from evidence output
+### Sample from evidence output
 
-l_pos : Sum of marginal positive evidence
-l_neg : Sum of marginal negative evidence
-l : Sum of marginal evidence (difference of positive and negative evidence)
-proj : Projection of benign-relative z scores of evidences on mean deviation class separation direction learned from training
-d_dist : Difference of Mahalanobis Distances of evidence vector from negative-class evidence manifold and positive-class evidence manifold
-E_pos : Total energy (sum of squares of projections over k principal components of positive-class) of evidence vector
-pM : Random Forest probability score for positive-class
+**l_pos** : Sum of marginal positive evidence  
+**l_neg** : Sum of marginal negative evidence  
+**l** : Sum of marginal evidence (difference of positive and negative evidence)  
+**proj** : Projection of benign-relative z scores of evidences on mean deviation class separation direction learned from training  
+**d_dist** : Difference of Mahalanobis Distances of evidence vector from negative-class evidence manifold and positive-class evidence manifold  
+**E_pos** : Total energy (sum of squares of projections over k principal components of positive-class) of evidence vector  
+**pM** : Random Forest probability score for positive-class  
 
 
 ```{r}
@@ -276,9 +326,9 @@ bcw_val_L <- bind_cols(diagnosis=bcw_val$diagnosis,
 
 ```
 
-Case-wise Feature Importance on validation set using unweighted relative evidence
+### Case-wise Feature Importance on validation set using unweighted relative evidence
 
-Malignant cases
+#### Malignant cases
 
 ```{r}
 
@@ -294,7 +344,7 @@ head(bcw_val_M_dom_l, 3)
 
 ```
 
-Benign cases
+#### Benign cases
 
 ```{r}
 
@@ -307,9 +357,9 @@ tail(bcw_val_B_dom_l, 3)
 ```
 
 
-Eigenmode Analysis (PCA) on validation set
+### Eigenmode Analysis (PCA) on validation set
 
-Eigenmodes of malignant subset 
+### Eigenmodes of malignant subset 
 
 ```{r}
 
@@ -325,7 +375,7 @@ bcw_Lval_w_coords_M <- bcw_Lval_w_M %*% bcw_Lval_w_eigvecs_M[, 1:2]
 
 ```
 
-Variance Explained
+#### Variance Explained
 
 ```{r}
 
@@ -333,7 +383,7 @@ bcw_Lval_w_eigvals_M[1:2] / sum(bcw_Lval_w_eigvals_M[1:2])
 
 ```
 
-Top 5 feature loadings
+#### Top 5 feature loadings
 
 ```{r}
 
@@ -343,7 +393,7 @@ decompose_eigenmode(bcw_Lval_w_eigvecs_M, k=2, feature_names = bcw_obj$fit$featu
 
 ```
 
-Eigenmode Plot
+#### Eigenmode Plot
 
 ```{r}
 
@@ -351,7 +401,7 @@ plot(bcw_Lval_w_coords_M[,1], bcw_Lval_w_coords_M[,2])
 
 ```
 
-Eigenmodes of Benign subset
+### Eigenmodes of Benign subset
 
 ```{r}
 
@@ -367,7 +417,7 @@ bcw_Lval_w_coords_B <- bcw_Lval_w_B %*% bcw_Lval_w_eigvecs_B[, 1:2]
 
 ```
 
-Variance Explained
+#### Variance Explained
 
 ```{r}
 
@@ -375,7 +425,7 @@ bcw_Lval_w_eigvals_B[1:2] / sum(bcw_Lval_w_eigvals_B[1:2])
 
 ```
 
-Top 5 feature loadings
+#### Top 5 feature loadings
 
 ```{r}
 
@@ -385,7 +435,7 @@ decompose_eigenmode(bcw_Lval_w_eigvecs_B, k=2, feature_names = bcw_obj$fit$featu
 
 ```
 
-Eigenmode Plot
+#### Eigenmode Plot
 
 ```{r}
 
@@ -393,7 +443,7 @@ plot(bcw_Lval_w_coords_B[,1], bcw_Lval_w_coords_B[,2])
 
 ```
 
-Cosine Similarity of Eigenmode 1 Malignant and Eigenmode 1 Benign
+### Cosine Similarity of Eigenmode 1 Malignant and Eigenmode 1 Benign
 
 ```{r}
 
@@ -402,7 +452,7 @@ acos((t(bcw_Lval_w_eigvecs_B[,1]) %*% bcw_Lval_w_eigvecs_M[,1]) / (sqrt(t(bcw_Lv
 ```
 
 
-Fitting Evidence Model and Random Forest on train+val set
+### Fitting Evidence Model and Random Forest on train+val set
 
 ```{r}
 
@@ -428,7 +478,7 @@ bcw_rf_train_2 <- ranger(formula = diagnosis ~ ., data=bind_rows(bcw_train%>%sel
 
 ```
 
-Test Set Performace
+## Test Set Performace
 
 ```{r}
 
@@ -436,6 +486,14 @@ bcw_scores_test <- bind_cols(bcw_scores_test,
                             pM = predict(bcw_rf_train_2, bcw_test%>%select(-id))$predictions[,"M"])
 
 ```
+
+### Triage Rule
+
+**If** $p > 0.65$ $\rightarrow$ **Malignant**  
+**Else If** $p > 0.45$ $\rightarrow$ **Review**  
+**Else**  
+&emsp;**If** $d\_dist > -1$ & $proj > 0$ $\rightarrow$ **Review**  
+&emsp;**Else** $\rightarrow$ **Benign**  
 
 
 ```{r}
@@ -460,6 +518,8 @@ triage_table <- function(df, truth_col = "diagnosis", action_col = "action") {
 
 
 ```
+
+### Triage Results
 
 ```{r}
 
