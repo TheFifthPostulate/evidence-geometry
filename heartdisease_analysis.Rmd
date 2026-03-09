@@ -59,7 +59,7 @@ With a conservative triage policy on the test set, the risk signals help achieve
 - Identification of true ambiguity in data
 - Abstention of classification of ambiguous cases
 - **98%** false negative capture rate through abstention
-- Maintain good automated classification rate at **38%**
+- Maintain good automated classification rate at **62%**
 
 ### Takeaway
 
