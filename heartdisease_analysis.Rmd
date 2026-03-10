@@ -24,7 +24,9 @@ set.seed(42)
 
 This notebook demonstrates the **Evidence Geometry** framework on the **UCI Heart Disease Cleveland** dataset.
 
-Instead of relying only on classifier probability, the framework analyzes each case using two geometric risk signals:
+Instead of relying only on classifier probability, the framework analyzes each case by collecting log likelihood ratios between classes by selecting marginal likelihood distribution families for each feature based on feature type and magnitude of log likelihood.
+
+This log-likelihood ratio space (evidence space) is then analyzed using two geometric risk signals:
 
 - **Distance Contrast (`d_dist`)**: measures which class manifold better explains the case
 - **Drift Projection (`proj`)**: measures directional drift toward positive-class structure
@@ -58,8 +60,8 @@ With a conservative triage policy on the test set, the risk signals help achieve
 
 - Identification of true ambiguity in data
 - Abstention of classification of ambiguous cases
-- **98%** false negative capture rate through abstention
-- Maintain good automated classification rate at **62%**
+- **100%** false negative capture rate through abstention
+- Maintain automated classification rate at **61%**
 
 ### Takeaway
 
@@ -210,10 +212,22 @@ spec <- risk_spec(
    alpha = alpha,
    laplace = 1, ridge = 1e-6, winsor_p=0.01,
    weights=FALSE,
-   weight_method = "mean_gap"
+   weight_method = "mutual_info",
+   numeric_candidates = c("gaussian", "lognormal", "gamma"),
+   numeric_val_frac = 0.2,
+   numeric_min_n = 25,
+   llr_cap_quantile = 0.01,
+   mi_nbins = 10
  )
 
 obj <- fit(heartdisease_train%>%select(-X), spec, k_eigen=2, k_energy=2, energy_ref="both")
+
+```
+
+
+```{r}
+
+print_feature_likelihoods(obj)
 
 ```
 
@@ -266,7 +280,7 @@ head(scores_val, 5)
 
 ```{r}
 
-feature_importance(df=heartdisease_train, y_col="num", fit = obj$fit, method = "mean_gap", top_n = 15)
+feature_importance(df=heartdisease_train, y_col="num", fit = obj$fit, method = "mutual_info", top_n = 15)
 
 ```
 
@@ -279,8 +293,24 @@ ggplot(scores_val) +
   theme_minimal()
 
 ggplot(scores_val) +
+  geom_point(aes(x=l, y=p, color=num), alpha=0.7) +
+  stat_smooth(aes(x=l, y=as.numeric(num)-1), method = "glm",
+              method.args = list(family = "binomial"),
+              se = TRUE) +
+  ylab("Random forest heart disease probability (p)") +
+  theme_minimal()
+
+ggplot(scores_val) +
   geom_point(aes(x=qlogis(p), y=l, color=num), alpha=0.7) +
   xlab("log-odds of random forest heart disease probability (p)") +
+  theme_minimal()
+
+ggplot(scores_val) +
+  geom_point(aes(x=d_dist, y=p, color=num), alpha=0.7) +
+  stat_smooth(aes(x=d_dist, y=as.numeric(num)-1), method = "glm",
+              method.args = list(family = "binomial"),
+              se = TRUE) +
+  ylab("Random forest heart disease probability (p)") +
   theme_minimal()
 
 ggplot(scores_val) +
@@ -309,7 +339,10 @@ ggplot(scores_val) +
 
 ggplot(scores_val) +
   geom_point(aes(x=proj, y=E_pos, color=num), alpha=0.7) +
-  theme_minimal(),
+  theme_minimal()
+) + patchwork::plot_layout(guides="collect")
+
+patchwork::wrap_plots(
 
 ggplot(scores_val%>%filter(d_dist < 0.7, E_pos < 400)) +
   geom_point(aes(x=d_dist, y=E_pos, color=num), alpha=0.7) +
@@ -420,6 +453,10 @@ acos((t(Lval_w_eigvecs_B[,1]) %*% Lval_w_eigvecs_M[,1]) / (sqrt(t(Lval_w_eigvecs
 obj_2 <- fit(bind_rows(heartdisease_train%>%select(-X),
                            heartdisease_val%>%select(-X)), spec, k_eigen=2, k_energy=2, energy_ref="both")
 
+```
+
+```{r}
+
 Ltest <- loglik_matrices(heartdisease_test%>%select(-X), obj_2$fit, alpha=spec$alpha)
 # val/test scoring
 scores_test <- bind_cols(X=heartdisease_test$X, 
@@ -430,6 +467,21 @@ scores_test <- bind_cols(X=heartdisease_test$X,
 
 
 ```
+
+
+```{r}
+
+feature_importance(df=bind_rows(heartdisease_train%>%select(-X),
+                           heartdisease_val%>%select(-X)), y_col="num", fit = obj_2$fit, method = "mutual_info", top_n = 15)
+
+```
+
+```{r}
+
+print_feature_likelihoods(obj_2)
+
+```
+
 
 ```{r}
 
@@ -451,21 +503,23 @@ scores_test <- bind_cols(scores_test,
 
 ### Triage Rule
 
-**If** $p > 0.65$ $\rightarrow$ **Heart Disease**  
+**If** $p \geq 0.65$ $\rightarrow$ **Heart Disease**  
 **Else If** $p > 0.45$ $\rightarrow$ **Review**  
 **Else**  
-&emsp;**If** $d\_dist > -1$ & $proj > 0$ $\rightarrow$ **Review**  
+&emsp;**If** $proj > 0$ $\rightarrow$ **Review**  
+&emsp;**Else If** $d\_dist \geq 0$ $\rightarrow$ **Review**  
 &emsp;**Else** $\rightarrow$ **Healthy**  
 
 ```{r}
 
-apply_triage <- function(df, p_hi = 0.65, p_review = 0.45, tau_d = -1.0, tau_p = 0) {
+apply_triage <- function(df, p_hi = 0.65, p_review = 0.45, tau_d = 0, tau_p = 0) {
   df %>%
     mutate(
       action = case_when(
         p >= p_hi ~ "Disease",
         p > p_review ~ "Review",
-        (p <= p_review) & (d_dist >= tau_d) & (proj > tau_p) ~ "Review",
+        (p <= p_review) & (proj > tau_p) ~ "Review",
+        (p <= p_review) & (d_dist >= tau_d) ~ "Review",
         TRUE ~ "Healthy"
       )
     )
@@ -486,7 +540,7 @@ triage_table <- function(df, truth_col, action_col = "action") {
 ```{r}
 
 test_triaged <- scores_test %>%
-  apply_triage(p_hi = 0.65, p_review = 0.45, tau_d = -1.0, tau_p = 0)
+  apply_triage(p_hi = 0.65, p_review = 0.45, tau_d = 0, tau_p = 0)
 
 triage_table(test_triaged, truth_col = "num", action_col = "action")
 

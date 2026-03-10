@@ -26,12 +26,19 @@ set.seed(42)
 
 This notebook demonstrates the **Evidence Geometry** framework on the **Breast Cancer Wisconsin** dataset.
 
-Instead of relying only on classifier probability, the framework analyzes each case using two geometric risk signals:
+Instead of relying only on classifier probability, the framework analyzes each case by collecting log likelihood ratios between classes by selecting marginal likelihood distribution families for each feature based on feature type and magnitude of log likelihood.
+
+This log-likelihood ratio space (evidence space) is then analyzed using two geometric risk signals:
 
 - **Distance Contrast (`d_dist`)**: measures which class manifold better explains the case
 - **Drift Projection (`proj`)**: measures directional drift toward positive-class structure
 
 ### Validation Set Risk Map
+
+<div style="text-align: center;">
+  <img src="v2/images/bcw_0.png" width="750">
+  <p><em>Random Forest Probability scores vs sum of LLRs closely follow the Logistic regression curve between true class and sum of LLRs, suggesting that sum of LLRs has discriminatory power comparable to Random Forest</em></p>
+</div>
 
 <div style="text-align: center;">
   <img src="v2/images/bcw_1.png" width="750">
@@ -46,8 +53,9 @@ Instead of relying only on classifier probability, the framework analyzes each c
 
 ### Main Observation
 
-Within the subset of cases assigned **low probability by the Random Forest classifier**, the two geometric signals reveal additional structure:
+Within the subset of cases assigned **low probability by the Random Forest (RF) classifier**, the two geometric signals reveal additional structure:
 
+- Sum of LLRs produces decision boundary similar to Random Forest
 - Boundary of ambiguity, d_dist = 0, occurs much earlier in the feature space than p = 0.5 classifier ambiguous region.
 - Dominant benign cluster is present in the region d_dist < 0, proj < 0.
 - Pathological cases are distinctly present among benign points that cross the benign central region of d_dist < 0 and proj < 0.
@@ -60,8 +68,8 @@ With a conservative triage policy on the test set, the risk signals help achieve
 
 - Identification of true ambiguity in data
 - Abstention of classification of ambiguous cases
-- **100%** false negative capture rate through abstention
-- Maintain good automated classification rate at **80%**
+- **99.5%** false negative capture rate through abstention
+- Maintain good automated classification rate at **95.6%**
 
 ### Takeaway
 
@@ -192,10 +200,22 @@ bcw_spec <- risk_spec(
    alpha = alpha,
    laplace = 1, ridge = 1e-6, winsor_p=0.01,
    weights=FALSE,
-   weight_method = "mean_gap"
+   weight_method = "mutual_info",
+   numeric_candidates = c("gaussian", "lognormal", "gamma"),
+   numeric_val_frac = 0.2,
+   numeric_min_n = 25,
+   llr_cap_quantile = 0.01,
+   mi_nbins = 10
  )
 
 bcw_obj <- fit(bcw_train%>%select(-id), bcw_spec, k_eigen=2, k_energy=2, energy_ref="both")
+
+```
+
+
+```{r}
+
+head(print_feature_likelihoods(bcw_obj), 5)
 
 ```
 
@@ -242,7 +262,7 @@ bcw_scores_val <- bind_cols(bcw_scores_val,
 
 ```{r}
 
-feature_importance(df=bcw_train, y_col="diagnosis", fit = bcw_obj$fit, method = "mean_gap", top_n = 15)
+feature_importance(df=bcw_train%>%select(-id), y_col="diagnosis", fit = bcw_obj$fit, method = "mutual_info", top_n = 15)
 
 ```
 
@@ -272,8 +292,24 @@ ggplot(bcw_scores_val) +
   theme_minimal()
 
 ggplot(bcw_scores_val) +
+  geom_point(aes(x=l, y=pM, color=diagnosis), alpha=0.7) +
+  stat_smooth(aes(x=l, y=as.numeric(diagnosis)-1), method = "glm",
+              method.args = list(family = "binomial"),
+              se = TRUE) +
+  ylab("Random forest malignancy probability (pM)") +
+  theme_minimal()
+
+ggplot(bcw_scores_val) +
   geom_point(aes(x=qlogis(pM), y=l, color=diagnosis), alpha=0.7) +
   xlab("log-odds of random forest malignancy probability (pM)") +
+  theme_minimal()
+
+ggplot(bcw_scores_val) +
+  geom_point(aes(x=d_dist, y=pM, color=diagnosis), alpha=0.7) +
+  stat_smooth(aes(x=d_dist, y=as.numeric(diagnosis)-1), method = "glm",
+              method.args = list(family = "binomial"),
+              se = TRUE) +
+  ylab("Random forest malignancy probability (pM)") +
   theme_minimal()
 
 ggplot(bcw_scores_val) +
@@ -301,7 +337,10 @@ ggplot(bcw_scores_val) +
 
 ggplot(bcw_scores_val) +
   geom_point(aes(x=proj, y=E_pos, color=diagnosis), alpha=0.7) +
-  theme_minimal(),
+  theme_minimal()
+) + patchwork::plot_layout(guides="collect")
+
+patchwork::wrap_plots(
 
 ggplot(bcw_scores_val%>%filter(d_dist < 10, E_pos < 400)) +
   geom_point(aes(x=d_dist, y=E_pos, color=diagnosis), alpha=0.7) +
@@ -472,6 +511,21 @@ bcw_scores_test <- bind_cols(id=bcw_test$id,
 
 ```{r}
 
+head(print_feature_likelihoods(bcw_obj_2), 5)
+
+```
+
+
+```{r}
+
+feature_importance(df=bind_rows(bcw_train%>%select(-id),
+                           bcw_val%>%select(-id)), y_col="diagnosis", fit = bcw_obj_2$fit, method = "mutual_info", top_n = 15)
+
+```
+
+
+```{r}
+
 bcw_rf_train_2 <- ranger(formula = diagnosis ~ ., data=bind_rows(bcw_train%>%select(-id), bcw_val%>%select(-id)),
                          mtry=8, min.node.size=5, num.trees=500, probability = TRUE,
                          keep.inbag = TRUE)
@@ -489,22 +543,23 @@ bcw_scores_test <- bind_cols(bcw_scores_test,
 
 ### Triage Rule
 
-**If** $p > 0.65$ $\rightarrow$ **Malignant**  
+**If** $p \geq 0.65$ $\rightarrow$ **Malignant**  
 **Else If** $p > 0.45$ $\rightarrow$ **Review**  
 **Else**  
-&emsp;**If** $d\_dist > -1$ & $proj > 0$ $\rightarrow$ **Review**  
+&emsp;**If** $proj > 0$ & $d\_dist \geq 0$ $\rightarrow$ **Review**  
 &emsp;**Else** $\rightarrow$ **Benign**  
 
 
 ```{r}
 
-apply_bcw_triage <- function(df, p_hi = 0.65, p_review = 0.45, tau_d = -1.0, tau_p = 0) {
+apply_bcw_triage <- function(df, p_hi = 0.65, p_review = 0.45, tau_d = 0, tau_p = 0) {
   df %>%
     mutate(
       action = case_when(
         pM >= p_hi ~ "Malignant",
         pM > p_review ~ "Review",
-        (pM <= p_review) & (d_dist >= tau_d) & (proj > tau_p) ~ "Review",
+        (pM <= p_review) & (proj > tau_p) & (d_dist >= tau_d) ~ "Review",
+        # (pM <= p_review) & (d_dist >= tau_d) ~ "Review",
         TRUE ~ "Benign"
       )
     )
@@ -524,7 +579,7 @@ triage_table <- function(df, truth_col = "diagnosis", action_col = "action") {
 ```{r}
 
 bcw_test_triaged <- bcw_scores_test %>%
-  apply_bcw_triage(p_hi = 0.65, p_review = 0.45, tau_d = -1.0, tau_p = 0)
+  apply_bcw_triage(p_hi = 0.65, p_review = 0.45, tau_d = 0, tau_p = 0)
 
 triage_table(bcw_test_triaged, truth_col = "diagnosis", action_col = "action")
 
