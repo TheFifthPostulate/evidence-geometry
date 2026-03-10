@@ -45,24 +45,34 @@ winsorize_df <- function(df, cols, p = 0.01) {
 risk_spec <- function(y_col,
                       positive,
                       features = NULL,
-                      alpha=0.5,                      
+                      alpha = 0.5,
                       laplace = 1,
                       numeric_min_sd = 1e-6,
                       ridge = 1e-6,
                       winsor_p = 0.01,
-                      weights=FALSE,
-                      weight_method = "mean_gap") {
+                      weights = FALSE,
+                      weight_method = "mean_gap",
+                      numeric_candidates = c("gaussian", "lognormal", "gamma"),
+                      numeric_val_frac = 0.2,
+                      numeric_min_n = 25,
+                      llr_cap_quantile = 0.01,
+                      mi_nbins = 10) {
   list(
     y_col = y_col,
     positive = positive,
     features = features,
-    alpha=0.5,
+    alpha = alpha,
     laplace = laplace,
     numeric_min_sd = numeric_min_sd,
     ridge = ridge,
     winsor_p = winsor_p,
-    weights=weights,
-    weight_method = weight_method
+    weights = weights,
+    weight_method = weight_method,
+    numeric_candidates = numeric_candidates,
+    numeric_val_frac = numeric_val_frac,
+    numeric_min_n = numeric_min_n,
+    llr_cap_quantile = llr_cap_quantile,
+    mi_nbins = mi_nbins
   )
 }
 
@@ -79,6 +89,174 @@ validate_spec <- function(df, spec) {
 # 1) Fit class-conditional models for each feature P(X_i|Y)
 #    (Gaussian for numeric; categorical with Laplace smoothing)
 # ============================================================
+
+# ============================================================
+# Numeric likelihood model selection helpers
+# ============================================================
+
+# ============================================================
+# Numeric likelihood model selection helpers
+# One family per feature, shared across both classes
+# ============================================================
+
+.safe_logval <- function(x, floor_log = log(1e-12)) {
+  x <- as.numeric(x)
+  x[!is.finite(x)] <- floor_log
+  pmax(x, floor_log)
+}
+
+.split_train_valid <- function(x, y, val_frac = 0.2) {
+  ok <- is.finite(x) & !is.na(y)
+  x <- x[ok]
+  y <- y[ok]
+  
+  n <- length(x)
+  if (n < 8) {
+    return(list(
+      x_train = x, y_train = y,
+      x_valid = x, y_valid = y
+    ))
+  }
+  
+  idx <- sample.int(n)
+  n_val <- max(3, floor(val_frac * n))
+  
+  valid_idx <- idx[seq_len(n_val)]
+  train_idx <- idx[-seq_len(n_val)]
+  
+  list(
+    x_train = x[train_idx],
+    y_train = y[train_idx],
+    x_valid = x[valid_idx],
+    y_valid = y[valid_idx]
+  )
+}
+
+.fit_gaussian_model <- function(x, min_sd = 1e-6) {
+  x <- x[is.finite(x)]
+  if (length(x) < 2) return(NULL)
+  
+  mu <- mean(x)
+  sdv <- max(sd(x), min_sd)
+  
+  list(
+    family = "gaussian",
+    params = list(mean = mu, sd = sdv),
+    logpdf = function(z) {
+      .safe_logval(dnorm(z, mean = mu, sd = sdv, log = TRUE))
+    }
+  )
+}
+
+.fit_lognormal_model <- function(x, min_sd = 1e-6) {
+  x <- x[is.finite(x)]
+  if (length(x) < 2 || any(x <= 0)) return(NULL)
+  
+  lx <- log(x)
+  mu <- mean(lx)
+  sdv <- max(sd(lx), min_sd)
+  
+  list(
+    family = "lognormal",
+    params = list(meanlog = mu, sdlog = sdv),
+    logpdf = function(z) {
+      out <- rep(log(1e-12), length(z))
+      ok <- is.finite(z) & (z > 0)
+      vals <- dlnorm(z[ok], meanlog = mu, sdlog = sdv, log = TRUE)
+      out[ok] <- .safe_logval(vals)
+      out
+    }
+  )
+}
+
+.fit_gamma_model <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) < 5 || any(x <= 0) || sd(x) < 1e-8) return(NULL)
+  
+  fit <- tryCatch(
+    suppressWarnings(MASS::fitdistr(x, densfun = "gamma")),
+    error = function(e) NULL
+  )
+  if (is.null(fit)) return(NULL)
+  
+  shape <- unname(fit$estimate["shape"])
+  rate  <- unname(fit$estimate["rate"])
+  
+  if (!is.finite(shape) || !is.finite(rate) || shape <= 0 || rate <= 0) {
+    return(NULL)
+  }
+  
+  list(
+    family = "gamma",
+    params = list(shape = shape, rate = rate),
+    logpdf = function(z) {
+      out <- rep(log(1e-12), length(z))
+      ok <- is.finite(z) & (z > 0)
+      vals <- dgamma(z[ok], shape = shape, rate = rate, log = TRUE)
+      out[ok] <- .safe_logval(vals)
+      out
+    }
+  )
+}
+
+.fit_family_by_name <- function(x, family, min_sd = 1e-6) {
+  switch(
+    family,
+    gaussian  = .fit_gaussian_model(x, min_sd = min_sd),
+    lognormal = .fit_lognormal_model(x, min_sd = min_sd),
+    gamma     = .fit_gamma_model(x),
+    NULL
+  )
+}
+
+.score_joint_family <- function(x_train, y_train, x_valid, y_valid,
+                                family, pos_label, neg_label,
+                                min_sd = 1e-6) {
+  model_pos <- .fit_family_by_name(x_train[y_train == pos_label], family, min_sd = min_sd)
+  model_neg <- .fit_family_by_name(x_train[y_train == neg_label], family, min_sd = min_sd)
+  
+  if (is.null(model_pos) || is.null(model_neg)) return(-Inf)
+  
+  ll_pos <- model_pos$logpdf(x_valid[y_valid == pos_label])
+  ll_neg <- model_neg$logpdf(x_valid[y_valid == neg_label])
+  
+  ll_pos <- ll_pos[is.finite(ll_pos)]
+  ll_neg <- ll_neg[is.finite(ll_neg)]
+  
+  if (length(ll_pos) == 0 || length(ll_neg) == 0) return(-Inf)
+  
+  mean(ll_pos) + mean(ll_neg)
+}
+
+.select_numeric_family_shared <- function(x, y, spec, pos_label, neg_label) {
+  ok <- is.finite(x) & !is.na(y)
+  x <- x[ok]
+  y <- y[ok]
+  
+  if (length(x) < spec$numeric_min_n) {
+    return("gaussian")
+  }
+  
+  split <- .split_train_valid(x, y, val_frac = spec$numeric_val_frac)
+  
+  fams <- spec$numeric_candidates
+  scores <- vapply(
+    fams,
+    function(fam) .score_joint_family(
+      x_train = split$x_train,
+      y_train = split$y_train,
+      x_valid = split$x_valid,
+      y_valid = split$y_valid,
+      family = fam,
+      pos_label = pos_label,
+      neg_label = neg_label,
+      min_sd = spec$numeric_min_sd
+    ),
+    numeric(1)
+  )
+  
+  fams[which.max(scores)]
+}
 
 fit_class_models <- function(train_df, spec) {
   validate_spec(train_df, spec)
@@ -114,30 +292,49 @@ fit_class_models <- function(train_df, spec) {
   df_pos <- train_df %>% filter(.data[[y_col]] == pos_label)
   df_neg <- train_df %>% filter(.data[[y_col]] == neg_label)
 
-  # Numeric params
+  # Numeric params: one selected family per feature, shared across classes
   num_params <- list()
   if (length(num_cols) > 0) {
-    
-    df_pos_w <- winsorize_df(df_pos, num_cols, p = spec$winsor_p)
-    df_neg_w <- winsorize_df(df_neg, num_cols, p = spec$winsor_p)
-    
-    summ_pos <- df_pos %>%
-      summarise(across(all_of(num_cols), list(mu = mean, sd = sd), na.rm = TRUE))
-    summ_neg <- df_neg %>%
-      summarise(across(all_of(num_cols), list(mu = mean, sd = sd), na.rm = TRUE))
-
-    get_vec <- function(summ, suffix) {
-      out <- setNames(numeric(length(num_cols)), num_cols)
-      for (c in num_cols) out[[c]] <- summ[[paste0(c, "_", suffix)]]
-      out
+    for (cname in num_cols) {
+      x_all <- winsorize_vec(train_df[[cname]], p = spec$winsor_p)
+      y_all <- train_df[[y_col]]
+      
+      selected_family <- .select_numeric_family_shared(
+        x = x_all,
+        y = y_all,
+        spec = spec,
+        pos_label = pos_label,
+        neg_label = neg_label
+      )
+      
+      x_pos <- winsorize_vec(df_pos[[cname]], p = spec$winsor_p)
+      x_neg <- winsorize_vec(df_neg[[cname]], p = spec$winsor_p)
+      
+      pos_model <- .fit_family_by_name(
+        x_pos,
+        family = selected_family,
+        min_sd = spec$numeric_min_sd
+      )
+      
+      neg_model <- .fit_family_by_name(
+        x_neg,
+        family = selected_family,
+        min_sd = spec$numeric_min_sd
+      )
+      
+      # fallback to gaussian if somehow one side fails
+      if (is.null(pos_model) || is.null(neg_model)) {
+        selected_family <- "gaussian"
+        pos_model <- .fit_family_by_name(x_pos, family = selected_family, min_sd = spec$numeric_min_sd)
+        neg_model <- .fit_family_by_name(x_neg, family = selected_family, min_sd = spec$numeric_min_sd)
+      }
+      
+      num_params[[cname]] <- list(
+        family = selected_family,
+        pos = pos_model,
+        neg = neg_model
+      )
     }
-
-    num_params <- list(
-      mu_pos = get_vec(summ_pos, "mu"),
-      sd_pos = pmax(get_vec(summ_pos, "sd"), spec$numeric_min_sd),
-      mu_neg = get_vec(summ_neg, "mu"),
-      sd_neg = pmax(get_vec(summ_neg, "sd"), spec$numeric_min_sd)
-    )
   }
 
   # Categorical params: categorical distribution per class (smoothed)
@@ -193,13 +390,16 @@ loglik_matrices <- function(df, fit, alpha, eps = 1e-12) {
   l_pos <- matrix(NA_real_, n, d, dimnames = list(NULL, feats))
   l_neg <- matrix(NA_real_, n, d, dimnames = list(NULL, feats))
 
-  # numeric gaussian logpdf
+  # numeric class-conditional logpdf from selected models
   if (length(fit$num_cols) > 0) {
-    np <- fit$num_params
     for (cname in fit$num_cols) {
       x <- out[[cname]]
-      l_pos[, cname] <- .safe_log(dnorm(x, np$mu_pos[[cname]], np$sd_pos[[cname]]))
-      l_neg[, cname] <- .safe_log(dnorm(x, np$mu_neg[[cname]], np$sd_neg[[cname]]))
+      
+      model_pos <- fit$num_params[[cname]]$pos
+      model_neg <- fit$num_params[[cname]]$neg
+      
+      l_pos[, cname] <- model_pos$logpdf(x)
+      l_neg[, cname] <- model_neg$logpdf(x)
     }
   }
   
@@ -221,11 +421,17 @@ loglik_matrices <- function(df, fit, alpha, eps = 1e-12) {
       l_neg[, cname] <- .safe_log(pneg, eps)
     }
   }
-
+  
+  floor_log <- log(eps)
+  l_pos[!is.finite(l_pos)] <- floor_log
+  l_neg[!is.finite(l_neg)] <- floor_log
+  
   L <- l_pos - l_neg
+  L[!is.finite(L)] <- 0
+  
   S <- apply(alpha * apply(l_pos, 2, exp) + (1 - alpha) * apply(l_neg, 2, exp), 2, .safe_log, eps)
   t <- l_pos + l_neg
-
+  
   list(
     l_pos = l_pos,
     l_neg = l_neg,
@@ -235,46 +441,172 @@ loglik_matrices <- function(df, fit, alpha, eps = 1e-12) {
   )
 }
 
+numeric_family_summary <- function(fit_obj) {
+  if (length(fit_obj$fit$num_cols) == 0) return(data.frame())
+  
+  data.frame(
+    feature = fit_obj$fit$num_cols,
+    pos_family = vapply(fit_obj$fit$num_cols, function(f) fit_obj$fit$num_params[[f]]$pos$family, character(1)),
+    neg_family = vapply(fit_obj$fit$num_cols, function(f) fit_obj$fit$num_params[[f]]$neg$family, character(1)),
+    stringsAsFactors = FALSE
+  )
+}
+
 # ============================================================
-# 3) Weighting (PLUGGABLE)
-#    Default = mean-gap of LLR across classes: w_i ∝ E[L_i|Y=1]-E[L_i|Y=0]
+# LLR capping / winsorization for stable weighting
+# ============================================================
+
+cap_llr_matrix <- function(L, q = 0.01) {
+  Lc <- L
+  for (j in seq_len(ncol(Lc))) {
+    x <- Lc[, j]
+    ok <- is.finite(x)
+    if (sum(ok) < 5) next
+    
+    qs <- stats::quantile(x[ok], probs = c(q, 1 - q), na.rm = TRUE, type = 7)
+    Lc[ok, j] <- pmin(pmax(x[ok], qs[[1]]), qs[[2]])
+  }
+  Lc
+}
+
+# ============================================================
+# Weighting methods
 # ============================================================
 
 weights_llr_mean_gap <- function(L, y, positive_label,
                                  nonneg = TRUE,
                                  normalize = TRUE,
+                                 cap_q = 0.01,
                                  eps = 1e-12) {
   y <- as.factor(y)
   pos <- positive_label
   neg <- setdiff(levels(y), pos)
   if (length(neg) != 1) stop("Binary y required for weights")
-
-  L_pos <- L[y == pos, , drop = FALSE]
-  L_neg <- L[y == neg, , drop = FALSE]
-
+  neg <- neg[[1]]
+  
+  Lc <- cap_llr_matrix(L, q = cap_q)
+  
+  L_pos <- Lc[y == pos, , drop = FALSE]
+  L_neg <- Lc[y == neg, , drop = FALSE]
+  
   w <- colMeans(L_pos) - colMeans(L_neg)
-
-  # if (nonneg) w <- pmax(0, w)
+  
   if (nonneg) w <- abs(w)
+  
   if (normalize) {
     s <- sum(w)
     if (s < eps) {
-      # fallback: uniform weights if everything is ~0
       w <- rep(1 / length(w), length(w))
       names(w) <- colnames(L)
     } else {
       w <- w / s
     }
   }
+  
+  w
+}
+
+.mutual_info_disc <- function(x_disc, y) {
+  tab <- table(x_disc, y)
+  n <- sum(tab)
+  if (n == 0) return(0)
+  
+  pxy <- tab / n
+  px <- rowSums(pxy)
+  py <- colSums(pxy)
+  
+  mi <- 0
+  for (i in seq_len(nrow(pxy))) {
+    for (j in seq_len(ncol(pxy))) {
+      if (pxy[i, j] > 0 && px[i] > 0 && py[j] > 0) {
+        mi <- mi + pxy[i, j] * log(pxy[i, j] / (px[i] * py[j]))
+      }
+    }
+  }
+  mi
+}
+
+weights_llr_mutual_info <- function(L, y, positive_label,
+                                    normalize = TRUE,
+                                    cap_q = 0.01,
+                                    nbins = 10,
+                                    eps = 1e-12) {
+  y <- as.factor(y)
+  Lc <- cap_llr_matrix(L, q = cap_q)
+  
+  w <- numeric(ncol(Lc))
+  names(w) <- colnames(Lc)
+  
+  for (j in seq_len(ncol(Lc))) {
+    x <- Lc[, j]
+    ok <- is.finite(x) & !is.na(y)
+    
+    if (sum(ok) < max(10, nbins)) {
+      w[j] <- 0
+      next
+    }
+    
+    x_ok <- x[ok]
+    y_ok <- y[ok]
+    
+    brks <- unique(stats::quantile(
+      x_ok,
+      probs = seq(0, 1, length.out = nbins + 1),
+      na.rm = TRUE,
+      type = 7
+    ))
+    
+    if (length(brks) < 3) {
+      w[j] <- 0
+      next
+    }
+    
+    x_disc <- cut(x_ok, breaks = brks, include.lowest = TRUE, ordered_result = FALSE)
+    w[j] <- .mutual_info_disc(x_disc, y_ok)
+  }
+  
+  if (normalize) {
+    s <- sum(w)
+    if (s < eps) {
+      w <- rep(1 / length(w), length(w))
+      names(w) <- colnames(Lc)
+    } else {
+      w <- w / s
+    }
+  }
+  
   w
 }
 
 compute_llr_weights <- function(L, y, fit,
-                                method = c("mean_gap"),
+                                method = c("mean_gap", "mutual_info"),
+                                cap_q = NULL,
+                                nbins = NULL,
                                 ...) {
   method <- match.arg(method)
+  
+  if (is.null(cap_q)) cap_q <- fit$spec$llr_cap_quantile
+  if (is.null(nbins)) nbins <- fit$spec$mi_nbins
+  
   if (method == "mean_gap") {
-    return(weights_llr_mean_gap(L, y, fit$pos_label, ...))
+    return(weights_llr_mean_gap(
+      L = L,
+      y = y,
+      positive_label = fit$pos_label,
+      cap_q = cap_q,
+      ...
+    ))
+  }
+  
+  if (method == "mutual_info") {
+    return(weights_llr_mutual_info(
+      L = L,
+      y = y,
+      positive_label = fit$pos_label,
+      cap_q = cap_q,
+      nbins = nbins,
+      ...
+    ))
   }
 }
 
@@ -298,38 +630,38 @@ compute_llr_weights_any <- function(L = NULL,
                                     fit = NULL,
                                     y_col = NULL,
                                     alpha = 0.5,
-                                    method = c("mean_gap"),
+                                    method = c("mean_gap", "mutual_info"),
                                     normalize = TRUE,
+                                    cap_q = NULL,
+                                    nbins = NULL,
                                     ...) {
   method <- match.arg(method)
   
-  # --- get L ---
   if (is.null(L)) {
     if (is.null(df) || is.null(fit)) {
       stop("Provide either L, or (df + fit) to compute L.")
     }
-    ll <- loglik_matrices(df, fit, alpha)  # must return list with $L (your current pattern)
+    ll <- loglik_matrices(df, fit, alpha)
     L <- ll$L
   }
   
-  # --- get y ---
   if (is.null(y)) {
     if (!is.null(df) && !is.null(y_col)) {
       y <- df[[y_col]]
     } else if (!is.null(df) && !is.null(fit) && !is.null(fit$y_col)) {
-      # optional: if you store y_col in fit
       y <- df[[fit$y_col]]
     } else {
       stop("Provide y, or provide (df + y_col).")
     }
   }
   
-  # --- get positive label ---
   if (is.null(fit) || is.null(fit$pos_label)) {
     stop("fit$pos_label is required to compute weights.")
   }
   
-  # --- dispatch weighting method ---
+  if (is.null(cap_q)) cap_q <- fit$spec$llr_cap_quantile
+  if (is.null(nbins)) nbins <- fit$spec$mi_nbins
+  
   w <- switch(
     method,
     mean_gap = weights_llr_mean_gap(
@@ -337,12 +669,21 @@ compute_llr_weights_any <- function(L = NULL,
       y = y,
       positive_label = fit$pos_label,
       normalize = normalize,
+      cap_q = cap_q,
+      ...
+    ),
+    mutual_info = weights_llr_mutual_info(
+      L = L,
+      y = y,
+      positive_label = fit$pos_label,
+      normalize = normalize,
+      cap_q = cap_q,
+      nbins = nbins,
       ...
     ),
     stop("Unknown method: ", method)
   )
   
-  # enforce names
   if (is.null(names(w))) names(w) <- colnames(L)
   w
 }
@@ -643,7 +984,12 @@ fit <- function(train_df, spec, k_eigen=2, k_energy=2, energy_ref="pos", weight_
     fit0$weights <- w
     Lw_tr <- L_tr
   }
-
+  
+  if (any(!is.finite(Lw_tr))) {
+    bad_cols <- names(which(colSums(!is.finite(Lw_tr)) > 0))
+    stop("Non-finite values in weighted evidence matrix. Problematic features: ",
+         paste(bad_cols, collapse = ", "))
+  }
 
   geom <- fit_evidence_geometry(
     Lw_train = Lw_tr,
@@ -656,5 +1002,142 @@ fit <- function(train_df, spec, k_eigen=2, k_energy=2, energy_ref="pos", weight_
   )
 
   list(fit = fit0, geom = geom)
+}
+
+
+
+print_feature_likelihoods <- function(fit_obj,
+                                      digits = 4,
+                                      top_n_cat = 6) {
+  # Accept either:
+  #   - fitted model returned by fit()  -> fit_obj$fit
+  #   - class-model object returned by fit_class_models()
+  fitx <- if (!is.null(fit_obj$fit)) fit_obj$fit else fit_obj
+  
+  rows <- list()
+  
+  format_params <- function(model) {
+    if (is.null(model)) return(NA_character_)
+    
+    fam <- model$family
+    p <- model$params
+    
+    if (fam == "gaussian") {
+      return(sprintf(
+        "mean=%.*f, sd=%.*f",
+        digits, p$mean,
+        digits, p$sd
+      ))
+    }
+    
+    if (fam == "lognormal") {
+      return(sprintf(
+        "meanlog=%.*f, sdlog=%.*f",
+        digits, p$meanlog,
+        digits, p$sdlog
+      ))
+    }
+    
+    if (fam == "gamma") {
+      return(sprintf(
+        "shape=%.*f, rate=%.*f",
+        digits, p$shape,
+        digits, p$rate
+      ))
+    }
+    
+    if (fam == "kde") {
+      gx <- p$grid_x
+      return(sprintf(
+        "grid_n=%d, range=[%.*f, %.*f]",
+        length(gx),
+        digits, min(gx),
+        digits, max(gx)
+      ))
+    }
+    
+    paste(capture.output(str(p)), collapse = "; ")
+  }
+  
+  fmt_cat_probs <- function(levels, probs, top_n = 6) {
+    ord <- order(probs, decreasing = TRUE)
+    ord <- head(ord, top_n)
+    
+    pieces <- sprintf(
+      "%s=%.*f",
+      levels[ord],
+      digits,
+      probs[ord]
+    )
+    
+    out <- paste(pieces, collapse = ", ")
+    if (length(levels) > top_n) {
+      out <- paste0(out, ", ...")
+    }
+    out
+  }
+  
+  # -----------------------------
+  # Numeric features
+  # -----------------------------
+  if (length(fitx$num_cols) > 0) {
+    for (fname in fitx$num_cols) {
+      pos_model <- fitx$num_params[[fname]]$pos
+      neg_model <- fitx$num_params[[fname]]$neg
+      
+      rows[[length(rows) + 1]] <- data.frame(
+        feature = fname,
+        class = "positive",
+        feature_type = "numeric",
+        likelihood_family = if (!is.null(pos_model)) pos_model$family else NA_character_,
+        parameters = format_params(pos_model),
+        stringsAsFactors = FALSE
+      )
+      
+      rows[[length(rows) + 1]] <- data.frame(
+        feature = fname,
+        class = "negative",
+        feature_type = "numeric",
+        likelihood_family = if (!is.null(neg_model)) neg_model$family else NA_character_,
+        parameters = format_params(neg_model),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  
+  # -----------------------------
+  # Categorical features
+  # -----------------------------
+  if (length(fitx$cat_cols) > 0) {
+    for (fname in fitx$cat_cols) {
+      cp <- fitx$cat_params[[fname]]
+      
+      levs <- cp$levels
+      pos_probs <- cp$p_pos
+      neg_probs <- cp$p_neg
+      
+      rows[[length(rows) + 1]] <- data.frame(
+        feature = fname,
+        class = "positive",
+        feature_type = "categorical",
+        likelihood_family = "categorical",
+        parameters = fmt_cat_probs(levs, pos_probs, top_n = top_n_cat),
+        stringsAsFactors = FALSE
+      )
+      
+      rows[[length(rows) + 1]] <- data.frame(
+        feature = fname,
+        class = "negative",
+        feature_type = "categorical",
+        likelihood_family = "categorical",
+        parameters = fmt_cat_probs(levs, neg_probs, top_n = top_n_cat),
+        stringsAsFactors = FALSE
+      )
+    }
+  }
+  
+  out <- dplyr::bind_rows(rows)
+  rownames(out) <- NULL
+  out
 }
 
