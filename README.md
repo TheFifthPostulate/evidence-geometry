@@ -53,23 +53,15 @@ Geometric Risk Signals
 
 For each case, the model computes:
 
-### 1️⃣ Distance Contrast (`d_dist`)
+### Distance Contrast (`d_dist`)
 Difference in Mahalanobis distance relative to learned class manifolds.  
 → Measures which class explains the case better in a covariance-aware way.
 
 ---
 
-### 2️⃣ Drift Projection (`proj`)
+### Drift Projection (`proj`)
 Projection onto the learned mean deviation separation direction.  
 → Captures accumulation of marginal evidence deviations toward the positive class.
-
----
-
-### 3️⃣ Principal Component Bundle Energy (`E_pos`)
-Sum of squared projections onto dominant positive-class eigenmodes.  
-→ Measures activation of characteristic positive-class feature bundles.
-
----
 
 Together, these signals capture complementary modes of risk instead of collapsing everything into a single probability score.
 
@@ -80,13 +72,11 @@ Together, these signals capture complementary modes of risk instead of collapsin
 A case might produce:  
 d_dist = -0.3  
 proj = +0.7  
-E_pos = moderate  
 
 Interpretation:
 
 - globally closer to the benign population
 - but drifting toward pathological structure
-- with partial activation of disease-related feature bundles
 
 Such cases are natural candidates for **review triage** rather than automated classification.
 
