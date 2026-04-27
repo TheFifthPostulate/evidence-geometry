@@ -21,7 +21,7 @@ The goal is to standardize feature values relative to outcome-specific distribut
 
 For each feature, values are transformed into a log-likelihood ratio:
 
-log p(x | positive) − log p(x | negative)
+`log p(x | positive) − log p(x | negative)`
 
 This converts raw inputs into a **common evidence scale**, allowing:
 
